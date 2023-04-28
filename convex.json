@@ -1,0 +1,7 @@
+{
+  "project": "row-level-security",
+  "team": "lee-danilek",
+  "prodUrl": "https://lazy-yak-841.convex.cloud",
+  "functions": "convex/",
+  "authInfo": []
+}
