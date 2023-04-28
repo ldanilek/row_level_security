@@ -1,5 +1,5 @@
 import { Auth, DocumentByInfo, Expression, FilterBuilder, GenericTableInfo, IndexRange, IndexRangeBuilder, Indexes, MutationBuilder, NamedIndex, NamedSearchIndex, OrderedQuery, PaginationOptions, PaginationResult, Query, QueryBuilder, QueryInitializer, SearchFilter, SearchFilterBuilder, SearchIndexes } from "convex/server";
-import { DatabaseReader, DatabaseWriter } from "./_generated/server";
+import { DatabaseReader, DatabaseWriter, mutation, query } from "./_generated/server";
 import { DataModel, Id } from "./_generated/dataModel";
 import { API } from "./_generated/api";
 import { readAccessRules, writeAccessRules } from "./authRules";
@@ -197,7 +197,7 @@ class WrapWriter implements DatabaseWriter {
 
 export const withQueryAuth: QueryBuilder<DataModel, "public"> =
   (f: any): any => {
-  return ((ctx: any, ...args: any[]) => {
+  return query((ctx: any, ...args: any[]) => {
     const db = ctx.db;
     const auth = ctx.auth;
     const wrappedDb = new WrapReader(db, auth);
@@ -208,7 +208,7 @@ export const withQueryAuth: QueryBuilder<DataModel, "public"> =
 
 export const withMutationAuth: MutationBuilder<DataModel, API, "public"> =
   (f: any): any => {
-  return ((ctx: any, ...args: any[]) => {
+  return mutation((ctx: any, ...args: any[]) => {
     const db = ctx.db;
     const auth = ctx.auth;
     const wrappedDb = new WrapWriter(db, auth);
