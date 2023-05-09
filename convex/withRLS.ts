@@ -2,7 +2,7 @@ import { Auth } from "convex/server";
 import { DataModel, Id } from "./_generated/dataModel";
 import { RowLevelSecurity } from "./rowLevelSecurity";
 
-export const withRLS = RowLevelSecurity<{ auth: Auth }, DataModel>(
+export const {withMutationRLS, withQueryRLS} = RowLevelSecurity<{ auth: Auth }, DataModel>(
   {
     messages: async ({ auth }, message) => {
       // Logged-in users can read everything.

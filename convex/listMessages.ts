@@ -1,9 +1,7 @@
-import { query } from "./_generated/server";
-import { withRLS } from "./withRLS";
+import { QueryCtx, query } from "./_generated/server";
+import { withQueryRLS } from "./withRLS";
 
-export default query({
-  args: {},
-  handler: withRLS(async ({ db }) => {
+export default query(withQueryRLS(async ({ db }) => {
     return await db.query("messages").collect();
   }),
-});
+);

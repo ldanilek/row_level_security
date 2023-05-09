@@ -1,3 +1,4 @@
+import { GenericAPI } from "convex/api";
 import {
   DatabaseReader,
   DatabaseWriter,
@@ -11,6 +12,7 @@ import {
   IndexRange,
   IndexRangeBuilder,
   Indexes,
+  MutationCtx,
   NamedIndex,
   NamedSearchIndex,
   NamedTableInfo,
@@ -18,12 +20,12 @@ import {
   PaginationOptions,
   PaginationResult,
   Query,
+  QueryCtx,
   QueryInitializer,
   SearchFilter,
   SearchFilterBuilder,
   SearchIndexes,
   TableNamesInDataModel,
-  UnvalidatedFunction,
 } from "convex/server";
 import { GenericId } from "convex/values";
 
@@ -93,34 +95,35 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * @returns Function to be passed to `query` or `mutation` respectively.
  *  For each row read or written, the security rules are applied.
  */
-export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
-  readAccessRules: Rules<Ctx, DataModel>,
-  writeAccessRules?: Rules<Ctx, DataModel>
-): Middleware => {
-  const withRLS = <Ctx, Args extends ArgsArray, Output>(
+export const RowLevelSecurity = <RuleCtx, DataModel extends GenericDataModel>(
+  readAccessRules: Rules<RuleCtx, DataModel>,
+  writeAccessRules?: Rules<RuleCtx, DataModel>
+) => {
+  const withMutationRLS = <Ctx extends MutationCtx<DataModel, any>, Args extends ArgsArray, Output>(
     f: Handler<Ctx, Args, Output>
-  ) => {
+  ): Handler<Ctx, Args, Output> => {
     return ((ctx: any, ...args: any[]) => {
-      const db = ctx.db;
-      if (!db) {
-        throw new Error("ctx must contain `db` for row level security");
-      }
-      let wrappedDb;
-      if (db["insert"] || db["patch"] || db["replace"] || db["delete"]) {
-        // i.e. db instanceof DatabaseWriter
-        wrappedDb = new WrapWriter(
+      const wrappedDb = new WrapWriter(
           ctx,
-          db,
+          ctx.db,
           readAccessRules,
           writeAccessRules || {}
         );
-      } else {
-        wrappedDb = new WrapReader(ctx, db, readAccessRules);
-      }
       return (f as any)({ ...ctx, db: wrappedDb }, ...args);
     }) as Handler<Ctx, Args, Output>;
   };
-  return withRLS;
+  const withQueryRLS = <Ctx extends QueryCtx<DataModel>, Args extends ArgsArray, Output>(
+    f: Handler<Ctx, Args, Output>
+  ): Handler<Ctx, Args, Output> => {
+    return ((ctx: any, ...args: any[]) => {
+      const wrappedDb = new WrapReader(ctx, ctx.db, readAccessRules);
+      return (f as any)({ ...ctx, db: wrappedDb }, ...args);
+    }) as Handler<Ctx, Args, Output>;
+  };
+  return {
+    withMutationRLS,
+    withQueryRLS,
+  };
 };
 
 type ArgsArray = [] | [FunctionArgs];
