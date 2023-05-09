@@ -40,9 +40,63 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
   [T in TableNamesInDataModel<DataModel>]?: Rule<Ctx, DataModel, T>;
 };
 
+/**
+ * Apply row level security (RLS) to queries and mutations with the returned
+ * middleware functions.
+ *
+ * Example:
+ * ```
+ * // Defined in a common file so it can be used by all queries and mutations.
+ * const { withMutationRLS } = RowLevelSecurity<{auth: Auth, db: DatabaseReader}, DataModel>(
+ *  {
+ *    cookies: ({auth}, cookie) => !cookie.eaten,
+ *  },
+ *  {
+ *    cookies: async ({auth, db}, cookie) => {
+ *      const user = await getUser(auth, db);
+ *      return user.isParent;  // only parents can reach the cookies.
+ *    }
+ *  }
+ * );
+ * // Mutation with row level security enabled.
+ * export const eatCookie = mutation(withMutationRLS(
+ *  async ({db}, {cookieId}: {cookieId: Id<"cookie">}) => {
+ *   // throws "does not exist" error if cookie is already eaten or doesn't exist.
+ *   // throws "write access" error if authorized user is not a parent.
+ *   await db.patch(cookieId, {eaten: true});
+ * }));
+ * ```
+ *
+ * Notes:
+ * * Rules may read any row in `db` -- rules do not apply recursively within the
+ *   rule functions themselves.
+ * * Tables with no rule default to full access.
+ * * Middleware functions like `withUser` can be composed with RowLevelSecurity
+ *   to cache fetches in `ctx`. e.g.
+ * ```
+ * const { withQueryRLS } = RowLevelSecurity<{user: Doc<"users">}, DataModel>(
+ *  {
+ *    cookies: ({user}, cookie) => user.isParent,
+ *  }
+ * );
+ * export default query(withUser(withQueryRLS(...)));
+ * ```
+ *
+ * @param readAccessRules - rule for each table, determining whether a row
+ *  should be visible.
+ * @param writeAccessRules - rule for each table, determining whether a row
+ *  may be written by `patch`, `replace`, or `delete`.
+ *  Rules do not restrict `db.insert`.
+ *  If `writeAccessRules` are omitted, write access is only restricted by read
+ *  access rules.
+ *
+ * @returns Functions `withQueryRLS` and `withMutationRLS`, to be passed to
+ *  `query` and `mutation` respectively. For each row read or written, the auth
+ *  rules are applied.
+ */
 export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
   readAccessRules: Rules<Ctx, DataModel>,
-  writeAccessRules: Rules<Ctx, DataModel>
+  writeAccessRules?: Rules<Ctx, DataModel>
 ) => {
   const withQueryRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
     f: UnvalidatedFunction<Ctx, Args, Output>
@@ -68,7 +122,7 @@ export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
         ctx,
         db,
         readAccessRules,
-        writeAccessRules
+        writeAccessRules || {}
       );
       return (f as any)({ ...ctx, db: wrappedDb }, ...args);
     }) as UnvalidatedFunction<Ctx, Args, Output>;
