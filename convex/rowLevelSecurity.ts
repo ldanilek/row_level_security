@@ -1,9 +1,89 @@
-import { Auth, DatabaseReader, DatabaseWriter, DocumentByInfo, DocumentByName, Expression, FilterBuilder, FunctionArgs, GenericDataModel, GenericTableInfo, IndexRange, IndexRangeBuilder, Indexes, MutationBuilder, NamedIndex, NamedSearchIndex, NamedTableInfo, OrderedQuery, PaginationOptions, PaginationResult, Query, QueryBuilder, QueryInitializer, SearchFilter, SearchFilterBuilder, SearchIndexes, TableNamesInDataModel, UnvalidatedFunction } from "convex/server";
+import {
+  DatabaseReader,
+  DatabaseWriter,
+  DocumentByInfo,
+  DocumentByName,
+  Expression,
+  FilterBuilder,
+  FunctionArgs,
+  GenericDataModel,
+  GenericTableInfo,
+  IndexRange,
+  IndexRangeBuilder,
+  Indexes,
+  NamedIndex,
+  NamedSearchIndex,
+  NamedTableInfo,
+  OrderedQuery,
+  PaginationOptions,
+  PaginationResult,
+  Query,
+  QueryInitializer,
+  SearchFilter,
+  SearchFilterBuilder,
+  SearchIndexes,
+  TableNamesInDataModel,
+  UnvalidatedFunction,
+} from "convex/server";
 import { GenericId } from "convex/values";
 
-type AuthPredicate<T extends GenericTableInfo> = (doc: DocumentByInfo<T>) => Promise<boolean>;
+export type Rule<
+  Ctx,
+  DataModel extends GenericDataModel,
+  TableName extends TableNamesInDataModel<DataModel>
+> = (
+  ctx: Ctx,
+  message: DocumentByName<DataModel, TableName>
+) => Promise<boolean>;
 
-async function asyncFilter<T>(arr: T[], predicate: (d: T) => Promise<boolean>): Promise<T[]> {
+export type Rules<Ctx, DataModel extends GenericDataModel> = {
+  [T in TableNamesInDataModel<DataModel>]?: Rule<Ctx, DataModel, T>;
+};
+
+export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
+  readAccessRules: Rules<Ctx, DataModel>,
+  writeAccessRules: Rules<Ctx, DataModel>
+) => {
+  const withQueryRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
+    f: UnvalidatedFunction<Ctx, Args, Output>
+  ) => {
+    return ((ctx: any, ...args: any[]) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new Error("ctx must contain `db` for row level security");
+      }
+      const wrappedDb = new WrapReader(ctx, db, readAccessRules);
+      return (f as any)({ ...ctx, db: wrappedDb }, ...args);
+    }) as UnvalidatedFunction<Ctx, Args, Output>;
+  };
+  const withMutationRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
+    f: UnvalidatedFunction<Ctx, Args, Output>
+  ) => {
+    return ((ctx: any, ...args: any[]) => {
+      const db = ctx.db;
+      if (!db) {
+        throw new Error("ctx must contain `db` for row level security");
+      }
+      const wrappedDb = new WrapWriter(
+        ctx,
+        db,
+        readAccessRules,
+        writeAccessRules
+      );
+      return (f as any)({ ...ctx, db: wrappedDb }, ...args);
+    }) as UnvalidatedFunction<Ctx, Args, Output>;
+  };
+  return { withQueryRLS, withMutationRLS };
+};
+
+type AuthPredicate<T extends GenericTableInfo> = (
+  doc: DocumentByInfo<T>
+) => Promise<boolean>;
+
+async function asyncFilter<T>(
+  arr: T[],
+  predicate: (d: T) => Promise<boolean>
+): Promise<T[]> {
   const results = await Promise.all(arr.map(predicate));
   return arr.filter((_v, index) => results[index]);
 }
@@ -16,13 +96,17 @@ class WrapQuery<T extends GenericTableInfo> implements Query<T> {
     this.q = q as Query<T>;
     this.p = p;
   }
-  filter(predicate: (q: FilterBuilder<T>) => Expression<boolean>): WrapQuery<T> {
+  filter(
+    predicate: (q: FilterBuilder<T>) => Expression<boolean>
+  ): WrapQuery<T> {
     return new WrapQuery(this.q.filter(predicate), this.p);
   }
   order(order: "asc" | "desc"): WrapQuery<T> {
     return new WrapQuery(this.q.order(order), this.p);
   }
-  async paginate(paginationOpts: PaginationOptions): Promise<PaginationResult<DocumentByInfo<T>>> {
+  async paginate(
+    paginationOpts: PaginationOptions
+  ): Promise<PaginationResult<DocumentByInfo<T>>> {
     const result = await this.q.paginate(paginationOpts);
     result.page = await asyncFilter(result.page, this.p);
     return result;
@@ -64,12 +148,12 @@ class WrapQuery<T extends GenericTableInfo> implements Query<T> {
   }
   async next(): Promise<IteratorResult<any>> {
     for (;;) {
-      const {value, done} = await this.iterator!.next();
+      const { value, done } = await this.iterator!.next();
       if (await this.p(value)) {
-        return {value, done};
+        return { value, done };
       }
       if (done) {
-        return {value: null, done: true};
+        return { value: null, done: true };
       }
     }
   }
@@ -78,7 +162,9 @@ class WrapQuery<T extends GenericTableInfo> implements Query<T> {
   }
 }
 
-class WrapQueryInitializer<T extends GenericTableInfo> implements QueryInitializer<T> {
+class WrapQueryInitializer<T extends GenericTableInfo>
+  implements QueryInitializer<T>
+{
   q: QueryInitializer<T>;
   p: AuthPredicate<T>;
   constructor(q: QueryInitializer<T>, p: AuthPredicate<T>) {
@@ -88,11 +174,26 @@ class WrapQueryInitializer<T extends GenericTableInfo> implements QueryInitializ
   fullTableScan(): Query<T> {
     return new WrapQuery(this.q.fullTableScan(), this.p);
   }
-  withIndex<IndexName extends keyof Indexes<T>>(indexName: IndexName, indexRange?: ((q: IndexRangeBuilder<DocumentByInfo<T>, NamedIndex<T, IndexName>, 0>) => IndexRange) | undefined): Query<T> {
+  withIndex<IndexName extends keyof Indexes<T>>(
+    indexName: IndexName,
+    indexRange?:
+      | ((
+          q: IndexRangeBuilder<DocumentByInfo<T>, NamedIndex<T, IndexName>, 0>
+        ) => IndexRange)
+      | undefined
+  ): Query<T> {
     return new WrapQuery(this.q.withIndex(indexName, indexRange), this.p);
   }
-  withSearchIndex<IndexName extends keyof SearchIndexes<T>>(indexName: IndexName, searchFilter: (q: SearchFilterBuilder<DocumentByInfo<T>, NamedSearchIndex<T, IndexName>>) => SearchFilter): OrderedQuery<T> {
-    return new WrapQuery(this.q.withSearchIndex(indexName, searchFilter), this.p);
+  withSearchIndex<IndexName extends keyof SearchIndexes<T>>(
+    indexName: IndexName,
+    searchFilter: (
+      q: SearchFilterBuilder<DocumentByInfo<T>, NamedSearchIndex<T, IndexName>>
+    ) => SearchFilter
+  ): OrderedQuery<T> {
+    return new WrapQuery(
+      this.q.withSearchIndex(indexName, searchFilter),
+      this.p
+    );
   }
   filter(predicate: (q: FilterBuilder<T>) => Expression<boolean>): Query<T> {
     return this.fullTableScan().filter(predicate);
@@ -100,7 +201,9 @@ class WrapQueryInitializer<T extends GenericTableInfo> implements QueryInitializ
   order(order: "asc" | "desc"): OrderedQuery<T> {
     return this.fullTableScan().order(order);
   }
-  async paginate(paginationOpts: PaginationOptions): Promise<PaginationResult<DocumentByInfo<T>>> {
+  async paginate(
+    paginationOpts: PaginationOptions
+  ): Promise<PaginationResult<DocumentByInfo<T>>> {
     return this.fullTableScan().paginate(paginationOpts);
   }
   collect(): Promise<DocumentByInfo<T>[]> {
@@ -120,62 +223,84 @@ class WrapQueryInitializer<T extends GenericTableInfo> implements QueryInitializ
   }
 }
 
-class WrapReader<Ctx, DataModel extends GenericDataModel> implements DatabaseReader<DataModel> {
+class WrapReader<Ctx, DataModel extends GenericDataModel>
+  implements DatabaseReader<DataModel>
+{
   ctx: Ctx;
   db: DatabaseReader<DataModel>;
   readAccessRules: Rules<Ctx, DataModel>;
 
-  constructor(ctx: Ctx, db: DatabaseReader<DataModel>, readAccessRules: Rules<Ctx, DataModel>) {
+  constructor(
+    ctx: Ctx,
+    db: DatabaseReader<DataModel>,
+    readAccessRules: Rules<Ctx, DataModel>
+  ) {
     this.ctx = ctx;
     this.db = db;
     this.readAccessRules = readAccessRules;
   }
 
-  async predicate<T extends GenericTableInfo>(tableName: string, doc: DocumentByInfo<T>): Promise<boolean> {
+  async predicate<T extends GenericTableInfo>(
+    tableName: string,
+    doc: DocumentByInfo<T>
+  ): Promise<boolean> {
     if (!(tableName in this.readAccessRules)) {
-        return true;
+      return true;
     }
     return await this.readAccessRules[tableName]!(this.ctx, doc);
   }
 
   async get<TableName extends string>(id: GenericId<TableName>): Promise<any> {
     const doc = await this.db.get(id);
-    if (doc && await this.predicate(id.tableName, doc)) {
+    if (doc && (await this.predicate(id.tableName, doc))) {
       return doc;
     }
     return null;
   }
 
-  query<TableName extends string>(tableName: TableName): QueryInitializer<NamedTableInfo<DataModel, TableName>> {
-    return new WrapQueryInitializer(this.db.query(tableName), async (d) => await this.predicate(tableName, d));
+  query<TableName extends string>(
+    tableName: TableName
+  ): QueryInitializer<NamedTableInfo<DataModel, TableName>> {
+    return new WrapQueryInitializer(
+      this.db.query(tableName),
+      async (d) => await this.predicate(tableName, d)
+    );
   }
 }
 
-class WrapWriter<Ctx, DataModel extends GenericDataModel> implements DatabaseWriter<DataModel> {
+class WrapWriter<Ctx, DataModel extends GenericDataModel>
+  implements DatabaseWriter<DataModel>
+{
   ctx: Ctx;
   db: DatabaseWriter<DataModel>;
   reader: DatabaseReader<DataModel>;
   writeAccessRules: Rules<Ctx, DataModel>;
 
-  async predicate<T extends GenericTableInfo>(tableName: string, doc: DocumentByInfo<T>): Promise<boolean> {
+  async predicate<T extends GenericTableInfo>(
+    tableName: string,
+    doc: DocumentByInfo<T>
+  ): Promise<boolean> {
     if (!(tableName in this.writeAccessRules)) {
       return true;
     }
     return await this.writeAccessRules[tableName]!(this.ctx, doc);
   }
-  
+
   constructor(
     ctx: Ctx,
     db: DatabaseWriter<DataModel>,
     readAccessRules: Rules<Ctx, DataModel>,
-    writeAccessRules: Rules<Ctx, DataModel>,
+    writeAccessRules: Rules<Ctx, DataModel>
   ) {
     this.ctx = ctx;
     this.db = db;
     this.reader = new WrapReader(ctx, db, readAccessRules);
     this.writeAccessRules = writeAccessRules;
   }
-  async insert<TableName extends string>(table: TableName, value: any): Promise<any> {
+  async insert<TableName extends string>(
+    table: TableName,
+    value: any
+  ): Promise<any> {
     // No auth check on insert.
     return await this.db.insert(table, value);
   }
@@ -184,15 +309,21 @@ class WrapWriter<Ctx, DataModel extends GenericDataModel> implements DatabaseWri
     if (doc === null) {
       throw new Error("no read access or doc does not exist");
     }
-    if (!await this.predicate(id.tableName, doc)) {
+    if (!(await this.predicate(id.tableName, doc))) {
       throw new Error("write access not allowed");
     }
   }
-  async patch<TableName extends string>(id: GenericId<TableName>, value: Partial<any>): Promise<void> {
+  async patch<TableName extends string>(
+    id: GenericId<TableName>,
+    value: Partial<any>
+  ): Promise<void> {
     await this.checkAuth(id);
     return await this.db.patch(id, value);
   }
-  async replace<TableName extends string>(id: GenericId<TableName>, value: any): Promise<void> {
+  async replace<TableName extends string>(
+    id: GenericId<TableName>,
+    value: any
+  ): Promise<void> {
     await this.checkAuth(id);
     return await this.db.replace(id, value);
   }
@@ -206,37 +337,4 @@ class WrapWriter<Ctx, DataModel extends GenericDataModel> implements DatabaseWri
   query<TableName extends string>(tableName: TableName): QueryInitializer<any> {
     return this.reader.query(tableName);
   }
-};
-
-type Rule<Ctx, DataModel extends GenericDataModel, TableName extends TableNamesInDataModel<DataModel>> = (
-    ctx: Ctx, message: DocumentByName<DataModel, TableName>
-) => Promise<boolean>;
-
-type Rules<Ctx, DataModel extends GenericDataModel> = {[T in TableNamesInDataModel<DataModel>]?: Rule<Ctx, DataModel, T>};
-
-export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
-    readAccessRules: Rules<Ctx, DataModel>,
-    writeAccessRules: Rules<Ctx, DataModel>,
-) => {
-    const withQueryRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(f: UnvalidatedFunction<Ctx, Args, Output>) => {
-        return ((ctx: any, ...args: any[]) => {
-            const db = ctx.db;
-            if (!db) {
-                throw new Error("ctx must contain `db` for row level security");
-            }
-            const wrappedDb = new WrapReader(ctx, db, readAccessRules);
-            return (f as any)({...ctx, db: wrappedDb}, ...args);
-        }) as UnvalidatedFunction<Ctx, Args, Output>;
-    };
-    const withMutationRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(f: UnvalidatedFunction<Ctx, Args, Output>) => {
-        return ((ctx: any, ...args: any[]) => {
-            const db = ctx.db;
-            if (!db) {
-                throw new Error("ctx must contain `db` for row level security");
-            }
-            const wrappedDb = new WrapWriter(ctx, db, readAccessRules, writeAccessRules);
-            return (f as any)({...ctx, db: wrappedDb}, ...args);
-        }) as UnvalidatedFunction<Ctx, Args, Output>;
-    };
-    return {withQueryRLS, withMutationRLS};
-};
+}
