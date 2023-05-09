@@ -60,7 +60,7 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * );
  * // Mutation with row level security enabled.
  * export const eatCookie = mutation(withRLS(
- *  async ({db}, {cookieId}: {cookieId: Id<"cookie">}) => {
+ *  async ({db}, {cookieId}) => {
  *   // throws "does not exist" error if cookie is already eaten or doesn't exist.
  *   // throws "write access" error if authorized user is not a parent.
  *   await db.patch(cookieId, {eaten: true});
@@ -96,9 +96,9 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
 export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
   readAccessRules: Rules<Ctx, DataModel>,
   writeAccessRules?: Rules<Ctx, DataModel>
-) => {
-  const withRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
-    f: UnvalidatedFunction<Ctx, Args, Output>
+): Middleware => {
+  const withRLS = <Ctx, Args extends ArgsArray, Output>(
+    f: Handler<Ctx, Args, Output>
   ) => {
     return ((ctx: any, ...args: any[]) => {
       const db = ctx.db;
@@ -118,10 +118,19 @@ export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
         wrappedDb = new WrapReader(ctx, db, readAccessRules);
       }
       return (f as any)({ ...ctx, db: wrappedDb }, ...args);
-    }) as UnvalidatedFunction<Ctx, Args, Output>;
+    }) as Handler<Ctx, Args, Output>;
   };
   return withRLS;
 };
+
+type ArgsArray = [] | [FunctionArgs];
+type Handler<Ctx, Args extends ArgsArray, Output> = (
+  ctx: Ctx,
+  ...args: Args
+) => Output;
+type Middleware = <Ctx, Args extends ArgsArray, Output>(
+  f: Handler<Ctx, Args, Output>
+) => Handler<Ctx, Args, Output>;
 
 type AuthPredicate<T extends GenericTableInfo> = (
   doc: DocumentByInfo<T>

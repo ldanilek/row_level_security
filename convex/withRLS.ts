@@ -19,9 +19,9 @@ export const withRLS = RowLevelSecurity<{ auth: Auth }, DataModel>(
       // Only the author can write to a message.
       const identity = await auth.getUserIdentity();
       if (identity === null) {
-        return message.published;
+        return false;
       }
-      return true;
+      return message.author === identity.tokenIdentifier;
     },
   }
 );
