@@ -1,7 +1,7 @@
 
 import { query } from "./_generated/server";
-import { withQueryAuth } from "./withAuth";
+import { withQueryRLS } from "./withAuth";
 
-export default withQueryAuth(async ({ db }) => {
+export default query(withQueryRLS(async ({ db }) => {
   return await db.query("messages").collect();
-});
+}));
