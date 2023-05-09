@@ -47,7 +47,7 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * Example:
  * ```
  * // Defined in a common file so it can be used by all queries and mutations.
- * const { withMutationRLS } = RowLevelSecurity<{auth: Auth, db: DatabaseReader}, DataModel>(
+ * const withRLS = RowLevelSecurity<{auth: Auth, db: DatabaseReader}, DataModel>(
  *  {
  *    cookies: ({auth}, cookie) => !cookie.eaten,
  *  },
@@ -59,7 +59,7 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  *  }
  * );
  * // Mutation with row level security enabled.
- * export const eatCookie = mutation(withMutationRLS(
+ * export const eatCookie = mutation(withRLS(
  *  async ({db}, {cookieId}: {cookieId: Id<"cookie">}) => {
  *   // throws "does not exist" error if cookie is already eaten or doesn't exist.
  *   // throws "write access" error if authorized user is not a parent.
@@ -74,12 +74,12 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * * Middleware functions like `withUser` can be composed with RowLevelSecurity
  *   to cache fetches in `ctx`. e.g.
  * ```
- * const { withQueryRLS } = RowLevelSecurity<{user: Doc<"users">}, DataModel>(
+ * const withRLS = RowLevelSecurity<{user: Doc<"users">}, DataModel>(
  *  {
  *    cookies: ({user}, cookie) => user.isParent,
  *  }
  * );
- * export default query(withUser(withQueryRLS(...)));
+ * export default query(withUser(withRLS(...)));
  * ```
  *
  * @param readAccessRules - rule for each table, determining whether a row
@@ -90,15 +90,14 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  *  If `writeAccessRules` are omitted, write access is only restricted by read
  *  access rules.
  *
- * @returns Functions `withQueryRLS` and `withMutationRLS`, to be passed to
- *  `query` and `mutation` respectively. For each row read or written, the auth
- *  rules are applied.
+ * @returns Function to be passed to `query` or `mutation` respectively.
+ *  For each row read or written, the security rules are applied.
  */
 export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
   readAccessRules: Rules<Ctx, DataModel>,
   writeAccessRules?: Rules<Ctx, DataModel>
 ) => {
-  const withQueryRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
+  const withRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
     f: UnvalidatedFunction<Ctx, Args, Output>
   ) => {
     return ((ctx: any, ...args: any[]) => {
@@ -106,28 +105,22 @@ export const RowLevelSecurity = <Ctx, DataModel extends GenericDataModel>(
       if (!db) {
         throw new Error("ctx must contain `db` for row level security");
       }
-      const wrappedDb = new WrapReader(ctx, db, readAccessRules);
-      return (f as any)({ ...ctx, db: wrappedDb }, ...args);
-    }) as UnvalidatedFunction<Ctx, Args, Output>;
-  };
-  const withMutationRLS = <Ctx, Args extends [] | [FunctionArgs], Output>(
-    f: UnvalidatedFunction<Ctx, Args, Output>
-  ) => {
-    return ((ctx: any, ...args: any[]) => {
-      const db = ctx.db;
-      if (!db) {
-        throw new Error("ctx must contain `db` for row level security");
+      let wrappedDb;
+      if (db["insert"] || db["patch"] || db["replace"] || db["delete"]) {
+        // i.e. db instanceof DatabaseWriter
+        wrappedDb = new WrapWriter(
+          ctx,
+          db,
+          readAccessRules,
+          writeAccessRules || {}
+        );
+      } else {
+        wrappedDb = new WrapReader(ctx, db, readAccessRules);
       }
-      const wrappedDb = new WrapWriter(
-        ctx,
-        db,
-        readAccessRules,
-        writeAccessRules || {}
-      );
       return (f as any)({ ...ctx, db: wrappedDb }, ...args);
     }) as UnvalidatedFunction<Ctx, Args, Output>;
   };
-  return { withQueryRLS, withMutationRLS };
+  return withRLS;
 };
 
 type AuthPredicate<T extends GenericTableInfo> = (

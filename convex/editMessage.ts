@@ -1,8 +1,8 @@
 import { Id } from "./_generated/dataModel";
 import { mutation } from "./_generated/server";
-import { withMutationRLS } from "./withAuth";
+import { withRLS } from "./withAuth";
 
-export default mutation(withMutationRLS(async ({ db },
+export default mutation(withRLS(async ({ db },
   { messageId, body, published }: {messageId: Id<"messages">, body: string, published: boolean},
 ) => {
   await db.patch(messageId, {

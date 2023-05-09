@@ -1,7 +1,7 @@
 import { mutation } from "./_generated/server";
-import { withMutationRLS } from "./withAuth";
+import { withRLS } from "./withAuth";
 
-export default mutation(withMutationRLS(async ({ db, auth },
+export default mutation(withRLS(async ({ db, auth },
   { body }: {body: string}
 ) => {
   const identity = await auth.getUserIdentity();
