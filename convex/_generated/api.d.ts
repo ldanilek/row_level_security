@@ -14,7 +14,7 @@ import type * as editMessage from "../editMessage";
 import type * as listMessages from "../listMessages";
 import type * as postMessage from "../postMessage";
 import type * as rowLevelSecurity from "../rowLevelSecurity";
-import type * as withAuth from "../withAuth";
+import type * as withAuth from "../withRLS";
 
 /**
  * A type describing your app's public Convex API.
