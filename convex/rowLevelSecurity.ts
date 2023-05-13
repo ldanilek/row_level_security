@@ -1,4 +1,3 @@
-import { GenericAPI } from "convex/api";
 import {
   DatabaseReader,
   DatabaseWriter,
@@ -26,20 +25,18 @@ import {
   SearchFilterBuilder,
   SearchIndexes,
   TableNamesInDataModel,
+  WithoutSystemFields,
 } from "convex/server";
 import { GenericId } from "convex/values";
 
-export type Rule<
-  Ctx,
-  DataModel extends GenericDataModel,
-  TableName extends TableNamesInDataModel<DataModel>
-> = (
-  ctx: Ctx,
-  message: DocumentByName<DataModel, TableName>
-) => Promise<boolean>;
+type Rule<Ctx, D> = (ctx: Ctx, doc: D) => Promise<boolean>;
 
 export type Rules<Ctx, DataModel extends GenericDataModel> = {
-  [T in TableNamesInDataModel<DataModel>]?: Rule<Ctx, DataModel, T>;
+  [T in TableNamesInDataModel<DataModel>]?: {
+    read?: Rule<Ctx, DocumentByName<DataModel, T>>;
+    write?: Rule<Ctx, DocumentByName<DataModel, T>>;
+    insert?: Rule<Ctx, WithoutSystemFields<DocumentByName<DataModel, T>>>;
+  };
 };
 
 /**
@@ -49,9 +46,9 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * Example:
  * ```
  * // Defined in a common file so it can be used by all queries and mutations.
- * const withRLS = RowLevelSecurity<{auth: Auth, db: DatabaseReader}, DataModel>(
+ * const {withMutationRLS} = RowLevelSecurity<{auth: Auth, db: DatabaseReader}, DataModel>(
  *  {
- *    cookies: ({auth}, cookie) => !cookie.eaten,
+ *    cookies: async ({auth}, cookie) => !cookie.eaten,
  *  },
  *  {
  *    cookies: async ({auth, db}, cookie) => {
@@ -61,7 +58,7 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  *  }
  * );
  * // Mutation with row level security enabled.
- * export const eatCookie = mutation(withRLS(
+ * export const eatCookie = mutation(withMutationRLS(
  *  async ({db}, {cookieId}) => {
  *   // throws "does not exist" error if cookie is already eaten or doesn't exist.
  *   // throws "write access" error if authorized user is not a parent.
@@ -76,9 +73,9 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * * Middleware functions like `withUser` can be composed with RowLevelSecurity
  *   to cache fetches in `ctx`. e.g.
  * ```
- * const withRLS = RowLevelSecurity<{user: Doc<"users">}, DataModel>(
+ * const {withQueryRLS} = RowLevelSecurity<{user: Doc<"users">}, DataModel>(
  *  {
- *    cookies: ({user}, cookie) => user.isParent,
+ *    cookies: async ({user}, cookie) => user.isParent,
  *  }
  * );
  * export default query(withUser(withRLS(...)));
@@ -89,34 +86,37 @@ export type Rules<Ctx, DataModel extends GenericDataModel> = {
  * @param writeAccessRules - rule for each table, determining whether a row
  *  may be written by `patch`, `replace`, or `delete`.
  *  Rules do not restrict `db.insert`.
- *  If `writeAccessRules` are omitted, write access is only restricted by read
+ *  If `writeAccessRules` are omitted, writes are only restricted by read
  *  access rules.
  *
- * @returns Function to be passed to `query` or `mutation` respectively.
+ * @returns Functions `withQueryRLS` and `withMutationRLS` to be passed to
+ * `query` or `mutation` respectively.
  *  For each row read or written, the security rules are applied.
  */
 export const RowLevelSecurity = <RuleCtx, DataModel extends GenericDataModel>(
-  readAccessRules: Rules<RuleCtx, DataModel>,
-  writeAccessRules?: Rules<RuleCtx, DataModel>
+  rules: Rules<RuleCtx, DataModel>
 ) => {
-  const withMutationRLS = <Ctx extends MutationCtx<DataModel, any>, Args extends ArgsArray, Output>(
+  const withMutationRLS = <
+    Ctx extends MutationCtx<DataModel, any>,
+    Args extends ArgsArray,
+    Output
+  >(
     f: Handler<Ctx, Args, Output>
   ): Handler<Ctx, Args, Output> => {
     return ((ctx: any, ...args: any[]) => {
-      const wrappedDb = new WrapWriter(
-          ctx,
-          ctx.db,
-          readAccessRules,
-          writeAccessRules || {}
-        );
+      const wrappedDb = new WrapWriter(ctx, ctx.db, rules);
       return (f as any)({ ...ctx, db: wrappedDb }, ...args);
     }) as Handler<Ctx, Args, Output>;
   };
-  const withQueryRLS = <Ctx extends QueryCtx<DataModel>, Args extends ArgsArray, Output>(
+  const withQueryRLS = <
+    Ctx extends QueryCtx<DataModel>,
+    Args extends ArgsArray,
+    Output
+  >(
     f: Handler<Ctx, Args, Output>
   ): Handler<Ctx, Args, Output> => {
     return ((ctx: any, ...args: any[]) => {
-      const wrappedDb = new WrapReader(ctx, ctx.db, readAccessRules);
+      const wrappedDb = new WrapReader(ctx, ctx.db, rules);
       return (f as any)({ ...ctx, db: wrappedDb }, ...args);
     }) as Handler<Ctx, Args, Output>;
   };
@@ -131,9 +131,6 @@ type Handler<Ctx, Args extends ArgsArray, Output> = (
   ctx: Ctx,
   ...args: Args
 ) => Output;
-type Middleware = <Ctx, Args extends ArgsArray, Output>(
-  f: Handler<Ctx, Args, Output>
-) => Handler<Ctx, Args, Output>;
 
 type AuthPredicate<T extends GenericTableInfo> = (
   doc: DocumentByInfo<T>
@@ -287,26 +284,26 @@ class WrapReader<Ctx, DataModel extends GenericDataModel>
 {
   ctx: Ctx;
   db: DatabaseReader<DataModel>;
-  readAccessRules: Rules<Ctx, DataModel>;
+  rules: Rules<Ctx, DataModel>;
 
   constructor(
     ctx: Ctx,
     db: DatabaseReader<DataModel>,
-    readAccessRules: Rules<Ctx, DataModel>
+    rules: Rules<Ctx, DataModel>
   ) {
     this.ctx = ctx;
     this.db = db;
-    this.readAccessRules = readAccessRules;
+    this.rules = rules;
   }
 
   async predicate<T extends GenericTableInfo>(
     tableName: string,
     doc: DocumentByInfo<T>
   ): Promise<boolean> {
-    if (!(tableName in this.readAccessRules)) {
+    if (!this.rules[tableName]?.read) {
       return true;
     }
-    return await this.readAccessRules[tableName]!(this.ctx, doc);
+    return await this.rules[tableName]!.read!(this.ctx, doc);
   }
 
   async get<TableName extends string>(id: GenericId<TableName>): Promise<any> {
@@ -333,42 +330,50 @@ class WrapWriter<Ctx, DataModel extends GenericDataModel>
   ctx: Ctx;
   db: DatabaseWriter<DataModel>;
   reader: DatabaseReader<DataModel>;
-  writeAccessRules: Rules<Ctx, DataModel>;
+  rules: Rules<Ctx, DataModel>;
 
-  async predicate<T extends GenericTableInfo>(
+  async writePredicate<T extends GenericTableInfo>(
     tableName: string,
     doc: DocumentByInfo<T>
   ): Promise<boolean> {
-    if (!(tableName in this.writeAccessRules)) {
+    if (!this.rules[tableName]?.write) {
       return true;
     }
-    return await this.writeAccessRules[tableName]!(this.ctx, doc);
+    return await this.rules[tableName]!.write!(this.ctx, doc);
   }
 
   constructor(
     ctx: Ctx,
     db: DatabaseWriter<DataModel>,
-    readAccessRules: Rules<Ctx, DataModel>,
-    writeAccessRules: Rules<Ctx, DataModel>
+    rules: Rules<Ctx, DataModel>
   ) {
     this.ctx = ctx;
     this.db = db;
-    this.reader = new WrapReader(ctx, db, readAccessRules);
-    this.writeAccessRules = writeAccessRules;
+    this.reader = new WrapReader(ctx, db, rules);
+    this.rules = rules;
   }
   async insert<TableName extends string>(
     table: TableName,
     value: any
   ): Promise<any> {
-    // No auth check on insert.
+    if (
+      this.rules[table]?.insert &&
+      !(await this.rules[table]!.insert!(this.ctx, value))
+    ) {
+      throw new Error("insert access not allowed");
+    }
     return await this.db.insert(table, value);
   }
   async checkAuth<TableName extends string>(id: GenericId<TableName>) {
+    // Note all writes already do a `db.get` internally, so this isn't
+    // an extra read; it's just populating the cache earlier.
+    // Since we call `this.get`, read access controls apply and this may return
+    // null even if the document exists.
     const doc = await this.get(id);
     if (doc === null) {
       throw new Error("no read access or doc does not exist");
     }
-    if (!(await this.predicate(id.tableName, doc))) {
+    if (!(await this.writePredicate(id.tableName, doc))) {
       throw new Error("write access not allowed");
     }
   }
